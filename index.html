@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Courier Management — Antigravity(v7)</title>
+    <title>Courier Management </title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -2914,6 +2914,8 @@
 
         .sheet-field {
             margin-bottom: 10px;
+            min-width: 0;
+            overflow: hidden;
         }
 
         .sheet-field label {
@@ -3523,6 +3525,8 @@
             font-size: 12.5px;
             transition: .15s;
             color: var(--ink);
+            min-width: 0;
+            overflow: hidden;
         }
 
         .fs-btn:focus-visible {
@@ -3827,8 +3831,8 @@
         /* 3. Perfect Alignment Engine */
         .sheet-row {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            /* Force 2 columns */
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            /* Force 2 columns, constrain content */
             gap: 12px;
             align-items: end;
             /* Aligns the BOTTOM of inputs/buttons */
@@ -4376,8 +4380,7 @@
                             <label><svg class="ico16">
                                     <use href="#i-calendar" />
                                 </svg> Dispatch Date</label>
-                            <input type="date" id="sheetDispatchDate" class="sheet-input" readonly
-                                onfocus="this.blur()">
+                            <input type="date" id="sheetDispatchDate" class="sheet-input" readonly>
                         </div>
                         <div class="sheet-field">
                             <label><svg class="ico16">
@@ -5881,7 +5884,6 @@
             paperSelect.addEventListener('change', updatePaperSize);
             // Initialize logic
             updatePaperSize();
-            loadUPILogoMap();
         }
 
         /* =========================
@@ -5889,7 +5891,6 @@
            ========================= */
         function populatePreferredCourier() {
             return fetch(`${SCRIPT_URL}?action=tracking`).then(r => r.json()).then(list => {
-                console.log('Tracking Data:', list); // DEBUG
                 courierOptions = (list || []).filter(v => { const name = typeof v === 'object' ? v.name : v; return !/heading/i.test(s(name)); });
                 const dd = document.getElementById('preferredCourier');
                 if (dd) {
@@ -5898,7 +5899,6 @@
                         const o = document.createElement('option');
                         const name = typeof n === 'object' ? n.name : n;
                         const icon = typeof n === 'object' ? n.icon : '';
-                        console.log('Processing option:', name, 'Icon:', icon); // DEBUG
                         o.value = s(name);
                         o.textContent = s(name);
                         if (icon) o.setAttribute('data-icon', icon);
@@ -6401,10 +6401,6 @@
             const tr = dd.closest('tr');
             if (!tr) return;
 
-            // If in Edit Mode, DO NOT auto-save.
-            // The user will click the Save button manually.
-            if (tr.classList.contains('editing')) return;
-
             const courier = dd.value;
             const url = trackingMap[courier] || '';
             updateField(tr, 'courieredVia', courier);
@@ -6412,7 +6408,14 @@
             const hid = tr.querySelector('input[data-field="trackingURL"]');
             if (hid) hid.value = url;
             if (link) { link.href = url || '#'; link.textContent = url ? 'Open' : 'Link'; }
-            doJsonpEdit(tr.dataset.sheetrow, { courieredVia: courier, trackingURL: url });
+
+            // Queue change — do NOT auto-save individually.
+            // User must click Save so dispatch group validation runs.
+            if (!tr.classList.contains('editing')) {
+                // Auto-enter edit mode so user is forced to use Save button
+                const editBtn = tr.querySelector('.edit-btn');
+                if (editBtn) editBtn.click();
+            }
         }
         function collectAllEditableValues(tr) {
             const map = {};
@@ -6801,6 +6804,21 @@
                     changes.trackingURL = trackingMap[changes.courieredVia] || '';
                 }
 
+                /* ── Dispatch Group Validation (table inline save) ── */
+                const _trk = (changes.trackingNumber || '').trim();
+                const _via = (changes.courieredVia || '').trim();
+                const _dt = (changes.dispatchDate || '').trim();
+                const _anyD = _trk || _via || _dt;
+                const _allD = _trk && _via && _dt;
+                if (_anyD && !_allD) {
+                    if (_trk && !_via) showToast('Please select a courier', 'exclamation');
+                    else if (_trk && !_dt) showToast('Please enter dispatch date', 'exclamation');
+                    else if (!_trk) showToast('Please enter courier/tracking number', 'exclamation');
+                    else showToast('Please complete all dispatch fields', 'exclamation');
+                    return;
+                }
+                /* ── End Dispatch Validation ── */
+
                 if (Object.keys(changes).length) {
                     const btn = tr.querySelector('.save-btn');
                     btn.disabled = true;
@@ -7170,17 +7188,17 @@
 
             // Handle Tracking URL Input Visibility
             const trkInput = document.getElementById('sheetTrackingURL');
+            const trkLink = document.getElementById('sheetTrackingLink');
             if (trkInput) {
-                trkInput.disabled = !on;
-                if (on) {
-                    trkInput.style.display = 'block'; // Always show in edit mode
+                // Tracking URL is auto-generated, never user-editable
+                trkInput.disabled = true;
+                const hasURL = trkInput.value.trim().length > 0;
+                if (hasURL && trkLink && trkLink.style.display !== 'none') {
+                    // URL exists and Open button is visible → hide input
+                    trkInput.style.display = 'none';
                 } else {
-                    // Re-apply visibility rule (hide if value exists, show if empty)
-                    if (trkInput.value.trim().length > 0 && document.getElementById('sheetTrackingLink').style.display !== 'none') {
-                        trkInput.style.display = 'none';
-                    } else {
-                        trkInput.style.display = 'block';
-                    }
+                    // No URL → show the placeholder input
+                    trkInput.style.display = 'block';
                 }
             }
 
@@ -7229,6 +7247,28 @@
                 const courierCharge = safeVal('sheetCourierCharge');
                 const payment = safeVal('sheetPayment');
 
+                /* ── Dispatch Group Validation (atomic save) ── */
+                const hasTrack = trackingNumber.length > 0;
+                const hasCourier = courieredVia.length > 0;
+                const hasDate = dispatchDate.length > 0;
+                const anyFilled = hasTrack || hasCourier || hasDate;
+                const allFilled = hasTrack && hasCourier && hasDate;
+
+                if (anyFilled && !allFilled) {
+                    setBtnLoading(btn, false);
+                    if (hasTrack && !hasCourier) {
+                        showToast('Please select a courier', 'exclamation');
+                    } else if (hasTrack && !hasDate) {
+                        showToast('Please enter dispatch date', 'exclamation');
+                    } else if (!hasTrack && (hasCourier || hasDate)) {
+                        showToast('Please enter courier/tracking number', 'exclamation');
+                    } else {
+                        showToast('Please complete all dispatch fields', 'exclamation');
+                    }
+                    return;
+                }
+                /* ── End Dispatch Validation ── */
+
                 const tMap = window.trackingMap || {};
                 const trackingURL = tMap[courieredVia] || ''; // Auto-link
 
@@ -7244,6 +7284,17 @@
             } catch (err) {
                 showToast('Save failed: ' + err.message, 'exclamation');
                 setBtnLoading(document.getElementById('sheetEditBtn'), false);
+            }
+        });
+
+        /* ── Auto-clear dispatch group when courier number is emptied ── */
+        document.getElementById('sheetTrackingNumber')?.addEventListener('input', (e) => {
+            if (!mobileDetail.edit) return;
+            if (e.target.value.trim() === '') {
+                const via = document.getElementById('sheetCourieredVia');
+                const dt = document.getElementById('sheetDispatchDate');
+                if (via) { via.value = ''; enhanceAllSelects(); }
+                if (dt) dt.value = '';
             }
         });
 
@@ -8316,12 +8367,19 @@
             setupMobileNav({ initial: true });
             applyDetailColsFromSwitch();
 
-            // populate select lists
-            await populatePreferredCourier();
-            await loadTrackingMap();
+            // Show skeletons immediately while data loads
+            showMetricsSkeleton();
+            renderTableSkeleton();
+            if (isMobile()) mobileCardSkeleton();
 
-            // first load
-            await refreshTableAndMetrics();
+            // Fire ALL backend fetches in parallel for maximum speed
+            await Promise.all([
+                populatePreferredCourier(),
+                loadTrackingMap(),
+                loadUPILogoMap(),
+                fetchPage(false),
+                fetchMetrics()
+            ]);
 
             // Mobile nav buttons
             document.querySelector('#mobileNav [data-target="insights"]')?.addEventListener('click', () => setMobileSection('insights'));
