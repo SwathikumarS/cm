@@ -4,10 +4,12 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Courier Management </title>
+    <title>DPM</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://script.google.com">
+    <link rel="dns-prefetch" href="https://script.google.com">
     <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap"
         rel="stylesheet">
@@ -4944,6 +4946,34 @@
            ========================= */
         const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwptrKwXgv28a8HEjrEsd2qxRlHoQfgm2jYW_PR0aU5E3a7MDh4j7fFV9HkfvCFycQi/exec';
         const PAGE_LIMIT = 25;
+        const CACHE_TTL = 10 * 60 * 1000; // 10 min cache for static data
+
+        /* ── localStorage stale-while-revalidate cache ── */
+        function cachedFetch(cacheKey, url, applyFn) {
+            // 1. Instantly apply cached data if available
+            let usedCache = false;
+            try {
+                const raw = localStorage.getItem(cacheKey);
+                if (raw) {
+                    const { ts, data } = JSON.parse(raw);
+                    if (data) { applyFn(data); usedCache = true; }
+                    // If cache is still fresh, skip network entirely
+                    if (Date.now() - ts < CACHE_TTL) return Promise.resolve();
+                }
+            } catch (_) { /* corrupt cache, ignore */ }
+
+            // 2. Fetch fresh data (foreground if no cache, background if stale)
+            const networkPromise = fetch(url)
+                .then(r => r.json())
+                .then(data => {
+                    try { localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), data })); } catch (_) { }
+                    applyFn(data);
+                })
+                .catch(() => { /* network failed, cached data already applied */ });
+
+            // If we had cache, don't wait for network
+            return usedCache ? Promise.resolve() : networkPromise;
+        }
 
         /* Row index mapping (kept from your original) */
         const SHEET_HEADER_ROWS = -1;
@@ -5890,7 +5920,7 @@
            BACKEND HELPERS
            ========================= */
         function populatePreferredCourier() {
-            return fetch(`${SCRIPT_URL}?action=tracking`).then(r => r.json()).then(list => {
+            return cachedFetch('cms_couriers', `${SCRIPT_URL}?action=tracking`, list => {
                 courierOptions = (list || []).filter(v => { const name = typeof v === 'object' ? v.name : v; return !/heading/i.test(s(name)); });
                 const dd = document.getElementById('preferredCourier');
                 if (dd) {
@@ -5907,29 +5937,24 @@
                     enhanceAllSelects();
                     syncSelectLabelState(dd);
                 }
-            }).catch(() => { courierOptions = []; });
+            });
         }
         function loadTrackingMap() {
-            return fetch(`${SCRIPT_URL}?action=getTrackingMap`)
-                .then(r => r.json())
-                .then(map => { trackingMap = map || {}; })
-                .catch(() => { trackingMap = {}; });
+            return cachedFetch('cms_trackingMap', `${SCRIPT_URL}?action=getTrackingMap`, map => {
+                trackingMap = map || {};
+            });
         }
         function loadUPILogoMap() {
-            return fetch(`${SCRIPT_URL}?action=getUPIMap`)
-                .then(r => r.json())
-                .then(list => {
-                    // List is [{name, logo}, ...]
-                    globalUPILogoMap = {};
-                    if (Array.isArray(list)) {
-                        list.forEach(item => {
-                            if (item.name && item.logo) {
-                                globalUPILogoMap[item.name] = item.logo;
-                            }
-                        });
-                    }
-                })
-                .catch(e => console.warn('Failed to load UPI Map', e));
+            return cachedFetch('cms_upiMap', `${SCRIPT_URL}?action=getUPIMap`, list => {
+                globalUPILogoMap = {};
+                if (Array.isArray(list)) {
+                    list.forEach(item => {
+                        if (item.name && item.logo) {
+                            globalUPILogoMap[item.name] = item.logo;
+                        }
+                    });
+                }
+            });
         }
 
         /* =========================
@@ -5961,7 +5986,7 @@
             });
 
             if (!append) {
-                renderTableSkeleton();
+                if (!isMobile()) renderTableSkeleton();
                 if (isMobile()) mobileCardSkeleton();
             }
 
@@ -6030,16 +6055,21 @@
                         hideMirrorHeader(); // Ensure hidden on empty
                         syncMirrorWidths(); // Sync for structure but keep hidden
                     } else {
-                        if (!append) {
-                            renderTable(list);
-                        } else {
-                            const tbody = document.querySelector('#courierList tbody');
-                            list.forEach(r => { tbody.insertAdjacentHTML('beforeend', buildRow(r)); });
-                            enhanceAllSelects();
-                            applyDetailColsFromSwitch();
-                            syncMirrorWidths();
+                        const mobile = isMobile();
+                        if (!mobile) {
+                            if (!append) {
+                                renderTable(list);
+                            } else {
+                                const tbody = document.querySelector('#courierList tbody');
+                                list.forEach(r => { tbody.insertAdjacentHTML('beforeend', buildRow(r)); });
+                                enhanceAllSelects();
+                                applyDetailColsFromSwitch();
+                                syncMirrorWidths();
+                            }
                         }
-                        renderMobileCards(list, !append);
+                        if (mobile) {
+                            renderMobileCards(list, !append);
+                        }
 
                         currentOffset += list.length;
                         isLastPage = list.length < PAGE_LIMIT;
@@ -8258,8 +8288,8 @@
         }
         function refreshTableAndMetrics() {
             showMetricsSkeleton();
-            renderTableSkeleton();
             if (isMobile()) mobileCardSkeleton();
+            else renderTableSkeleton();
 
             // Parallel Fetch for speed
             return Promise.all([
@@ -8369,8 +8399,8 @@
 
             // Show skeletons immediately while data loads
             showMetricsSkeleton();
-            renderTableSkeleton();
             if (isMobile()) mobileCardSkeleton();
+            else renderTableSkeleton();
 
             // Fire ALL backend fetches in parallel for maximum speed
             await Promise.all([
